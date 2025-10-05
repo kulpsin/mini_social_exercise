@@ -7,6 +7,8 @@ import sqlite3
 import hashlib
 import re
 from datetime import datetime
+import logging
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = '123456789' 
@@ -931,10 +933,63 @@ def moderate_content(content):
             password: admin
     Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
-
+    score = 0.0
     moderated_content = content
-    score = 0
-    
+
+    if content is None:
+        logger.error("Content was None")
+        return moderated_content, score
+
+    # Rule 1.1.1: Severe violation check, Tier 1
+    t1_pattern = re.compile(r'\b(' + '|'.join(TIER1_WORDS) + r')\b', flags=re.IGNORECASE)
+    if t1_pattern.search(content) is not None:
+        return "[content removed due to severe violation]", 5.0
+
+    # Rule 1.1.2, Severe violation check: Tier 2
+    t2_pattern = re.compile(r'\b(' + '|'.join(TIER2_PHRASES) + r')\b', flags=re.IGNORECASE)
+    if t2_pattern.search(content) is not None:
+        return "[content removed due to spam/scam policy]", 5.0
+
+    # Rule 1.2.1: Tier 3 Words
+    # Define a regex pattern that matches any whole word in the content that is on the tier 3 list
+    t3_pattern = re.compile(r'\b(' + '|'.join(TIER3_WORDS) + r')\b', flags=re.IGNORECASE)
+    # Run the regex to find all the matching words
+    matches = t3_pattern.findall(content)
+    score += len(matches) * 2.0
+    # Using the same regex, we replace all words with *
+    moderated_content = t3_pattern.sub(lambda m: '*' * len(m.group(0)), content)
+
+    # Rule 1.2.2 URL, non obfuscated
+    # Initialize pattern, this should also detect the "[.]" url obfuscation.
+    url_pattern = re.compile(
+        r"(?:http[s]?:\/\/.)?(?:www\.)?[-a-zA-Z0-9@%._\+~#=]{2,256}(?:\.|\[\.\])[a-z]{2,6}\b(?:[-a-zA-Z0-9@:%_\+.~#?&\/\/=]*)"
+    )
+    # Find all matches
+    matches = url_pattern.findall(content)
+    # Whitelist the internal url(s): These are not external links
+    matches = [m for m in matches if 'mini-social.szab.eu' not in m]
+
+    # Append to score
+    score += len(matches) * 2.0
+    # Replace links with string
+    for match in matches:
+        moderated_content = moderated_content.replace(match, "[link removed]")
+
+    # Rule 1.2.3: Excessive Capitalization
+    # Someone has done some benchmarking and their conclusion was that
+    # regex is fastest: https://stackoverflow.com/a/61412931/9804561
+    uppercase_count = len(re.findall(r'[A-Z]', content))
+    lowercase_count = len(re.findall(r'[a-z]', content))
+    total_count = uppercase_count + lowercase_count
+    if total_count > 15 and uppercase_count / total_count > 0.7:
+        score += 0.5
+
+    # Optional: Phone numbers
+    phone_pattern = re.compile(r"([+]?\d{1,3}[-\s]?|)\d{3}[-\s]?\d{0,3}[-\s]?\d{4}")
+    matches = phone_pattern.findall(content)
+    score += len(matches) * 1.0
+    # Replace number with string
+    moderated_content = phone_pattern.sub("[phone number removed]", moderated_content)
     return moderated_content, score
 
 
