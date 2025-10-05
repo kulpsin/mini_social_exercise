@@ -881,7 +881,11 @@ def recommend(user_id, filter_following):
     Returns:
         A list of 5 recommended posts, in reverse-chronological order.
 
-    To test whether your recommendation algorithm works, let's pretend we like the DIY topic. Here are some users that often post DIY comment and a few example posts. Make sure your account did not engage with anything else. You should test your algorithm with these and see if your recommendation algorithm picks up on your interest in DIY and starts showing related content.
+    To test whether your recommendation algorithm works, let's pretend we like the DIY topic.
+    Here are some users that often post DIY comment and a few example posts. Make sure your
+    account did not engage with anything else. You should test your algorithm with these and
+    see if your recommendation algorithm picks up on your interest in DIY and starts showing
+    related content.
     
     Users: @starboy99, @DancingDolphin, @blogger_bob
     Posts: 1810, 1875, 1880, 2113
@@ -891,10 +895,85 @@ def recommend(user_id, filter_following):
     - http://www.configworks.com/mz/handout_recsys_sac2010.pdf
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
+    # 1. Get the content of all of the posts written by an user the user is following
+    #    and all of the posts the user has reacted positively to.
+    interesting_posts_content = query_db(
+        """
+        SELECT DISTINCT p.id, p.content
+        FROM posts p
+        JOIN reactions r ON p.id = r.post_id
+        WHERE
+            (r.user_id = ? AND r.reaction_type NOT IN ('sad', 'angry')) OR
+            p.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)
+        """,
+        (user_id, user_id,),
+    )
+    top_keywords = set()
+    reacted_post_ids = set()
+    if interesting_posts_content:
+        # 2. Find the most common words from the posts they liked
+        word_counts = collections.Counter()
+        # A simple list of common words to ignore
+        stop_words = {'a', 'an', 'the', 'in', 'on', 'is', 'it', 'to', 'for', 'of', 'and', 'lot', 'with', 'this', 'here', 'what'}
 
-    recommended_posts = {} 
+        for post in interesting_posts_content:
+            # Use regex to find all words in the post content
+            reacted_post_ids.add(post['id'])
+            words = re.findall(r'\b\w+\b', post['content'].lower())
+            for word in words:
+                # We only allow at least 3 characters long words
+                if word not in stop_words and len(word) > 2:
+                    word_counts[word] += 1
 
-    return recommended_posts;
+        top_keywords = {word for word, _ in word_counts.most_common(10)}
+
+    query = """
+    SELECT p.id, p.content, p.created_at, u.username, u.id as user_id
+    FROM posts p
+    JOIN users u ON p.user_id = u.id
+    """
+    params = []
+
+    # If filtering by following, add a WHERE clause to only include followed users.
+    if filter_following:
+        query += " WHERE p.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)"
+        params.append(user_id)
+    else:
+        # Skip user's own posts (assuming user can't follow themselves)
+        query += " WHERE p.user_id != ?"
+        params.append(user_id)
+    # Order the posts by date (newest first)
+    query += " ORDER BY p.created_at DESC"
+
+    all_other_posts = query_db(query, tuple(params))
+
+    recommended_posts = []
+    for post in all_other_posts:
+        # Do not recommend the posts which the user has reacted to.
+        if post['id'] in reacted_post_ids:
+            continue
+        visible_content, moderation_score = moderate_content(post['content'])
+        # Do not recommend the posts which have over 2.0 moderate_content score.
+        if moderation_score > 2.0:
+            continue
+        # Content must be at least 20 characters long to be eligible for recommendation.
+        if len(visible_content) < 20:
+            continue
+        # Do not recommend the posts if the poster's user_risk_analysis-score is
+        # medium or higher (3.0).
+        if user_risk_analysis(post['user_id']) >= 3.0:
+            continue
+        # Require at least a single top keyword in the post to be recommended, if
+        # any top keywords have been found
+        if not top_keywords or any(keyword in post['content'].lower() for keyword in top_keywords):
+            recommended_posts.append(post)
+
+        # We need only 5 posts
+        if len(recommended_posts) == 5:
+            break
+    # Return 0-5 posts
+    return recommended_posts
+
 
 # Task 3.2
 def user_risk_analysis(user_id):
