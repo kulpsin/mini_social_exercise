@@ -124,15 +124,81 @@
         </div>
         {% endif %}
       </div>
+    
+    {% if entry.original_post %}
+    <hr>
+    <div class="card mb-4" id="post-{{ entry.post.id }}-repost">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+          <h3 class="card-title mb-0">
+            <a href="/u/{{ entry.original_post.user_id }}">{{ user_display(entry.original_post.username) }} </a>
+          </h3>
+          <small class="text-muted">{{ entry.original_post.created_at|datetimeformat }}</small>
+        </div>
+        <p class="mt-2">{{ entry.original_post.content }}</p>
+        <!-- Reactions Display and Add Reaction Button -->
+        <div class="d-flex align-items-center mt-2 mb-2">
+          <!-- Display existing reactions -->
+          <div class="reactions-display me-2">
+            {% if entry.original_reactions %}
+              {% for react in entry.original_reactions %}
+                {% if react.reaction_type == entry.original_user_reaction %}
+                  <form action="{{ url_for('unreact') }}" method="post" class="d-inline">
+                    <input type="hidden" name="post_id" value="{{ entry.original_post.id }}">
+                    <button type="submit" class="btn btn-light text-dark me-1" title="{{ react.reaction_type|capitalize }}">
+                      {{ reaction_emojis.get(react.reaction_type, '👍') }} {{ react.count }}
+                    </button>
+                  </form>
+                {% else %}
+                  <span class=" text-dark me-1" title="{{ react.reaction_type|capitalize }}">
+                    {{ reaction_emojis.get(react.reaction_type, '👍') }} {{ react.count }}
+                  </span>
+                {% endif %}
+              {% endfor %}
+            {% else %}
+              <span class="text-muted"> No reactions yet </span>
+            {% endif %}
+          </div>
 
+          <!-- Add Reaction Dropdown Button -->
+          {% if session.get('user_id') %}
+            <div class="dropdown">
+              <button class="btn btn-sm btn-light text-dark rounded-circle m-0" type="button" id="dropdownMenuButton-{{ entry.original_post.id }}" data-bs-toggle="dropdown" aria-expanded="false" title="Add Reaction" >
+                +
+              </button>
+              <ul class="dropdown-menu" aria-labelledby="dropdownMenuButton-{{ entry.original_post.id }}">
+                {% for reaction_type in reaction_types %}
+                <li>
+                  <form action="{{ url_for('add_reaction') }}" method="POST" class="d-inline">
+                    <input type="hidden" name="post_id" value="{{ entry.original_post.id }}">
+                    <input type="hidden" name="reaction" value="{{ reaction_type }}">
+                    <button type="submit" class="dropdown-item">
+                      {{ reaction_emojis.get(reaction_type, '👍') }} {{ reaction_type|capitalize }}
+                    </button>
+                  </form>
+                </li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+        </div>
+              <div class="d-flex justify-content-between mt-3">
+        <a href="/posts/{{ entry.original_post.id }}" class="btn btn-sm btn-light show-comments-btn">
+          View original post
+        </a>
+        <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addRepostModal-{{ entry.original_post.id }}">Repost</button>
+      </div>
+      </div>
 
-     {% if entry.comments %}
+    </div>
+    {% endif %}
+
+    {% if entry.comments or entry.reposts%}
       <hr>
-      {% if entry.comments %}
-        <h6 class="mb-0">Comments ({{ entry.comments | count }})</h4>
-      {% else %}
-        <h6 class="mb-0">Comments</h4>
-      {% endif %}
+    {% endif %}
+    {% if entry.comments %}
+
+      <h6 class="mb-0">Comments ({{ entry.comments | count }})</h6>
       <ul class="list-group list-group-flush shadow-none border-0">
         {% for comment in entry.comments[-2:] %}
         <li class="card shadow-none p-2 mt-2">
@@ -152,13 +218,33 @@
         </li>
         {% endfor %}
       </ul>
-      {% endif %}
-
+    {% else %}
+      <p class="mb-0">No comments yet, be first to comment!</p>
+    {% endif %}
+    {% if entry.reposts %}
+      <h6 class="mb-0 mt-2">Reposts ({{ entry.reposts | count }})</h6>
+      <ul class="list-group list-group-flush shadow-none border-0">
+        {% for repost in entry.reposts[-2:] %}
+        <li class="card shadow-none p-2 mt-2">
+          <div class="d-flex justify-content-between">
+            <div>
+              <strong><a href="/u/{{ repost.username }}">{{ user_display(repost.username) }}</a></strong>
+              (<a href="/posts/{{ repost.id }}" class="link">View repost</a>)
+              <p class="mb-0">{{ repost.content }}</p>
+            </div>
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
       <div class="d-flex justify-content-between mt-3">
-        <a href="/posts/{{ entry.post.id }}" class="btn btn-sm btn-light show-comments-btn">
+        <a href="/posts/{{ entry.post.id }}" class="btn btn-sm btn-light show-comments-btn me-auto p-2 bd-highlight">
           Show all comments
         </a>
-        <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addCommentModal-{{ entry.post.id }}">Add Comment</button>
+        {% if not entry.original_post %}
+          <button class="btn btn-primary btn-sm p-2 bd-highlight mr-2" data-bs-toggle="modal" data-bs-target="#addRepostModal-{{ entry.post.id }}">Repost</button>
+        {% endif %}
+        <button class="btn btn-primary btn-sm p-2 bd-highlight ml-2" data-bs-toggle="modal" data-bs-target="#addCommentModal-{{ entry.post.id }}">Add Comment</button>
       </div>
     </div>
   </div>
@@ -183,6 +269,48 @@
       </div>
     </div>
   </div>
+
+  {% if entry.original_post %}
+  <div class="modal fade" id="addRepostModal-{{ entry.original_post.id }}" tabindex="-1" aria-labelledby="addRepostModalLabel-{{ entry.original_post.id }}" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="addRepostModalLabel-{{ entry.original_post.id }}">Create a repost</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <form action="/posts/{{ entry.original_post.id }}/repost" method="POST">
+            <div class="mb-3">
+              <label for="repost-content-{{ entry.original_post.id }}" class="form-label">Your comment</label>
+              <textarea class="form-control" id="repost-content-{{ entry.original_post.id }}" name="content" rows="3" required></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary">Submit Repost</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="modal fade" id="addRepostModal-{{ entry.post.id }}" tabindex="-1" aria-labelledby="addRepostModalLabel-{{ entry.post.id }}" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="addRepostModalLabel-{{ entry.post.id }}">Create a repost</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <form action="/posts/{{ entry.post.id }}/repost" method="POST">
+            <div class="mb-3">
+              <label for="repost-content-{{ entry.post.id }}" class="form-label">Your comment</label>
+              <textarea class="form-control" id="repost-content-{{ entry.post.id }}" name="content" rows="3" required></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary">Submit Repost</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   {% else %}
   <p class="text-center">No posts to display.</p>

@@ -63,17 +63,86 @@
         {% endif %}
       </div>
 
+
+      <!-- If repost, show the original post -->
+      {% if original_post %}
+      <hr>
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center">
+            <h3 class="card-title mb-0">
+              <a href="/u/{{ original_post.user_id }}">{{ user_display(original_post.username) }}</a>
+            </h3>
+            {% if session.get('user_id') == post.user_id %}
+            <div class="d-flex align-items-center">
+                <small class="text-muted me-3">{{ original_post.created_at|datetimeformat }}</small>
+                <a href="/posts/{{ original_post.id }}" class="btn btn-sm btn-light show-comments-btn me-auto p-2 bd-highlight">Open original post</a>
+            </div>
+            {% else %}
+            <small class="text-muted">{{ original_post.created_at|datetimeformat }}</small>
+            {% endif %}
+          </div>
+          
+          <p class="card-text mt-2">{{ original_post.content }}</p>
+
+          <!-- Reactions Display and Add Reaction Button (Copied from feed.html.j2) -->
+          <div class="d-flex align-items-center mt-2 mb-2">
+            <!-- Display existing reactions -->
+            <div class="reactions-display me-2">
+                {% if original_reactions %}
+                  {% for react in original_reactions %}
+                    <span class="text-dark me-1" title="{{ react.reaction_type|capitalize }}">
+                      {{ reaction_emojis.get(react.reaction_type, '👍') }} {{ react.count }}
+                    </span>
+                  {% endfor %}
+                {% else %}
+                  <span class="text-muted small">No reactions yet</span>
+                {% endif %}
+            </div>
+
+            <!-- Add Reaction Dropdown Button -->
+            {% if session.get('user_id') %}
+            <div class="dropdown">
+              <button class="btn btn-sm btn-light text-dark rounded-circle m-0" type="button" id="dropdownMenuButton-{{ original_post.id }}" data-bs-toggle="dropdown" aria-expanded="false" title="Add Reaction">
+                +
+              </button>
+              <ul class="dropdown-menu" aria-labelledby="dropdownMenuButton-{{ original_post.id }}">
+                {% for reaction_type in reaction_types %}
+                <li>
+                  <form action="{{ url_for('add_reaction') }}" method="POST" class="d-inline">
+                    <input type="hidden" name="post_id" value="{{ original_post.id }}">
+                    <input type="hidden" name="reaction" value="{{ reaction_type }}">
+                    <button type="submit" class="dropdown-item">
+                      {{ reaction_emojis.get(reaction_type, '👍') }} {{ reaction_type|capitalize }}
+                    </button>
+                  </form>
+                </li>
+                {% endfor %}
+              </ul>
+            </div>
+            {% endif %}
+          </div>
+          <div class="d-flex justify-content-end">
+            <button class="btn btn-primary btn-sm bd-highlight" data-bs-toggle="modal" data-bs-target="#addRepostModal-{{ original_post.id }}">Repost</button>
+          </div>
+        </div>
+        
+      </div>
+      {% endif %}
       <hr>
 
       <!-- Comments Section -->
-      <div class="d-flex justify-content-between align-items-center mb-2">
+      <div class="d-flex justify-content-between mb-2">
           {% if comments %}
-            <h4 class="mb-0">Comments ({{ comments | count }})</h4>
+            <h4 class="mb-0 me-auto p-2 bd-highlight">Comments ({{ comments | count }})</h4>
           {% else %}
-            <h4 class="mb-0">Comments</h4>
+            <h4 class="mb-0 me-auto p-2 bd-highlight">Comments</h4>
           {% endif %}
           <!-- Add Comment Button (triggers modal) -->
-          <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addCommentModal-{{ post.id }}">Add Comment</button>
+          {% if not original_post %}
+            <button class="btn btn-primary btn-sm p-2 bd-highlight mr-2" data-bs-toggle="modal" data-bs-target="#addRepostModal-{{ post.id }}">Repost</button>
+          {% endif %}
+          <button class="btn btn-primary btn-sm p-2 bd-highlight ml-2" data-bs-toggle="modal" data-bs-target="#addCommentModal-{{ post.id }}">Add Comment</button>
       </div>
 
       {% if comments %}
@@ -84,14 +153,34 @@
             <div>
               <strong><a href="/u/{{ comment.username }}">{{ user_display(comment.username) }}</a></strong>
               <p class="mb-0">{{ comment.content }}</p>
-              
-            
-            {% if session.get('user_id') == comment.user_id or session.get('user_id') == post.user_id %}
-            <form action="{{ url_for('delete_comment', comment_id=comment.id) }}" method="POST" onsubmit="return confirm('Are you sure you want to delete this comment?');">
-                <button type="submit" class="btn btn-sm btn-danger" title="Delete Comment">delete</button>
-            </form>
-            {% endif %}
+              {% if session.get('user_id') == comment.user_id or session.get('user_id') == post.user_id %}
+              <form action="{{ url_for('delete_comment', comment_id=comment.id) }}" method="POST" onsubmit="return confirm('Are you sure you want to delete this comment?');">
+                  <button type="submit" class="btn btn-sm btn-danger" title="Delete Comment">delete</button>
+              </form>
+              {% endif %}
+            </div>
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
 
+      <!-- Reposts Section -->
+      {% if reposts %}
+      <div class="d-flex justify-content-between mb-2">
+        <h4 class="mb-0 me-auto p-2 bd-highlight">Reposts ({{ reposts | count }})</h4>
+      </div>
+
+      
+      <ul class="list-group list-group-flush shadow-none border-0">
+        {% for repost in reposts %}
+        <li class="card shadow-none p-2 mt-2">
+          <div class="d-flex justify-content-between">
+            <div>
+              <strong><a href="/u/{{ repost.username }}">{{ user_display(repost.username) }}</a></strong>
+              (<a href="/posts/{{ repost.id }}" >View repost</a>)
+              <p class="mb-0">{{ repost.content }}</p>
+            <div>
           </div>
         </li>
         {% endfor %}
@@ -120,5 +209,50 @@
     </div>
   </div>
 </div>
+
+
+{% if original_post %}
+  <!-- addRepostModal for the original post  -->
+  <div class="modal fade" id="addRepostModal-{{ original_post.id }}" tabindex="-1" aria-labelledby="addRepostModalLabel-{{ original_post.id }}" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="addRepostModalLabel-{{ original_post.id }}">Create a repost</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <form action="/posts/{{ original_post.id }}/repost" method="POST">
+            <div class="mb-3">
+              <label for="repost-content-{{ original_post.id }}" class="form-label">Your comment</label>
+              <textarea class="form-control" id="repost-content-{{ original_post.id }}" name="content" rows="3" required></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary">Submit Repost</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+{% else %}
+  <!-- addRepostModal for the post  -->
+  <div class="modal fade" id="addRepostModal-{{ post.id }}" tabindex="-1" aria-labelledby="addRepostModalLabel-{{ post.id }}" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="addRepostModalLabel-{{ post.id }}">Create a repost</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <form action="/posts/{{ post.id }}/repost" method="POST">
+            <div class="mb-3">
+              <label for="repost-content-{{ post.id }}" class="form-label">Your comment</label>
+              <textarea class="form-control" id="repost-content-{{ post.id }}" name="content" rows="3" required></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary">Submit Repost</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endif %}
 
 {% endblock %}

@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, g
+from flask import Flask, render_template, request, redirect, url_for, session, flash, g, abort
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 import collections
@@ -125,7 +125,7 @@ def feed():
 
     if sort == 'popular':
         query = f"""
-            SELECT p.id, p.content, p.created_at, u.username, u.id as user_id,
+            SELECT p.id, p.content, p.created_at, u.username, u.id as user_id, p.original_post_id,
                    IFNULL(r.total_reactions, 0) as total_reactions
             FROM posts p
             JOIN users u ON p.user_id = u.id
@@ -142,7 +142,7 @@ def feed():
         posts = recommend(current_user_id, show == 'following' and current_user_id)
     else:  # Default sort is 'new'
         query = f"""
-            SELECT p.id, p.content, p.created_at, u.username, u.id as user_id
+            SELECT p.id, p.content, p.created_at, u.username, u.id as user_id, p.original_post_id
             FROM posts p
             JOIN users u ON p.user_id = u.id
             {where_clause}
@@ -178,6 +178,36 @@ def feed():
 
         reactions = query_db('SELECT reaction_type, COUNT(*) as count FROM reactions WHERE post_id = ? GROUP BY reaction_type', (post['id'],))
         comments_raw = query_db('SELECT c.id, c.content, c.created_at, u.username, u.id as user_id FROM comments c JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at ASC', (post['id'],))
+        reposts_raw = query_db('SELECT p.id, p.content, p.created_at, u.username, u.id AS user_id FROM posts p JOIN users u ON p.user_id = u.id WHERE p.original_post_id = ? ORDER BY p.created_at ASC', (post['id'],))
+        original_post_dict = None
+        original_reactions = None
+        original_user_reaction = None
+        # If the post is repost:
+        if post['original_post_id']:
+            original_post = query_db("""
+                    SELECT p.id, p.content, p.created_at, u.username, u.id as user_id
+                    FROM posts p
+                    JOIN users u ON p.user_id = u.id
+                    WHERE p.id = ?
+                    LIMIT 1
+                """,
+                args=(post['original_post_id'],),
+                one=True,
+            )
+            if original_post:
+                original_post_dict = dict(original_post)
+                original_post_dict['content'], _ = moderate_content(original_post_dict['content'])
+                original_reactions = query_db('SELECT reaction_type, COUNT(*) as count FROM reactions WHERE post_id = ? GROUP BY reaction_type', (post['original_post_id'],))
+                original_user_reaction = None
+                if current_user_id:
+                    reaction_check = query_db(
+                        'SELECT reaction_type FROM reactions WHERE user_id = ? AND post_id = ?',
+                        args=(current_user_id, post['original_post_id']),
+                        one=True
+                    )
+                    if reaction_check:
+                        original_user_reaction = reaction_check['reaction_type']
+
         post_dict = dict(post)
         post_dict['content'], _ = moderate_content(post_dict['content'])
         comments_moderated = []
@@ -185,12 +215,21 @@ def feed():
             comment_dict = dict(comment)
             comment_dict['content'], _ = moderate_content(comment_dict['content'])
             comments_moderated.append(comment_dict)
+        reposts_moderated = []
+        for repost in reposts_raw:
+            repost_dict = dict(repost)
+            repost_dict['content'], _ = moderate_content(repost_dict['content'])
+            reposts_moderated.append(repost_dict)
         posts_data.append({
             'post': post_dict,
             'reactions': reactions,
             'user_reaction': user_reaction,
             'followed_poster': followed_poster,
-            'comments': comments_moderated
+            'comments': comments_moderated,
+            'reposts': reposts_moderated,
+            'original_post': original_post_dict,
+            'original_reactions': original_reactions,
+            'original_user_reaction': original_user_reaction,
         })
 
     #  4. Render Template with Pagination Info 
@@ -268,7 +307,37 @@ def delete_post(post_id):
 
     flash('Your post was successfully deleted.', 'success')
     # Redirect back to the page the user came from, or the feed as a fallback
-    return redirect(request.referrer or url_for('feed'))
+    return redirect(url_for('feed'))
+
+@app.route('/posts/<int:post_id>/repost', methods=['POST'])
+def add_repost(post_id: int):
+    """Handles creation of a repost."""
+    user_id = session.get('user_id')
+    # Block access if user is not logged in
+    if not user_id:
+        flash('You must be logged in to repost.', 'danger')
+        return redirect(url_for('login'))
+
+    # Get content from the submitted form
+    content = request.form.get('content')
+
+    # Pass the user's content through the moderation function
+    moderated_content = content
+
+    # Basic validation to ensure post is not empty
+    if moderated_content and moderated_content.strip():
+        db = get_db()
+        db.execute('INSERT INTO posts (user_id, original_post_id, content) VALUES (?, ?, ?)',
+                   (user_id, post_id, moderated_content))
+        db.commit()
+        flash('Your repost was successfully created!', 'success')
+    else:
+        # This will catch empty posts or posts that were fully censored
+        flash('Post cannot be empty or was fully censored.', 'warning')
+
+    # Redirect back to the main feed to see the new post
+    return redirect(url_for('feed'))
+
 
 @app.route('/u/<username>')
 def user_profile(username):
@@ -354,9 +423,9 @@ def user_following(username):
 @app.route('/posts/<int:post_id>')
 def post_detail(post_id):
     """Displays a single post and its comments, with content moderation applied."""
-    
+
     post_raw = query_db('''
-        SELECT p.id, p.content, p.created_at, u.username, u.id as user_id
+        SELECT p.id, p.original_post_id, p.content, p.created_at, u.username, u.id as user_id
         FROM posts p
         JOIN users u ON p.user_id = u.id
         WHERE p.id = ?
@@ -383,7 +452,27 @@ def post_detail(post_id):
 
     #  Fetch and Moderate Comments 
     comments_raw = query_db('SELECT c.id, c.content, c.created_at, u.username, u.id as user_id FROM comments c JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at ASC', (post_id,))
-    
+    reposts_raw = query_db('SELECT p.id, p.content, p.created_at, u.username, u.id AS user_id FROM posts p JOIN users u ON p.user_id = u.id WHERE p.original_post_id = ? ORDER BY p.created_at ASC', (post_id,))
+    original_post_dict = None
+    original_reactions = None
+    original_user_reaction = None
+    if post['original_post_id']:
+        original_post = query_db("""
+                SELECT p.id, p.content, p.created_at, u.username, u.id as user_id
+                FROM posts p
+                JOIN users u ON p.user_id = u.id
+                WHERE p.id = ?
+                LIMIT 1
+            """,
+            args=(post['original_post_id'],),
+            one=True,
+        )
+        if original_post:
+            original_post_dict = dict(original_post)
+            original_post_dict['content'], _ = moderate_content(original_post_dict['content'])
+            original_reactions = query_db('SELECT reaction_type, COUNT(*) as count FROM reactions WHERE post_id = ? GROUP BY reaction_type', (post['original_post_id'],))
+            original_user_reaction = None
+
     comments = [] # Create a new list for the moderated comments
     for comment_raw in comments_raw:
         comment = dict(comment_raw) # Convert to a dictionary
@@ -392,14 +481,23 @@ def post_detail(post_id):
         moderated_comment_content, _ = moderate_content(comment['content'])
         comment['content'] = moderated_comment_content
         comments.append(comment)
-
+    reposts_moderated = []
+    for repost in reposts_raw:
+        repost_dict = dict(repost)
+        repost_dict['content'], _ = moderate_content(repost_dict['content'])
+        reposts_moderated.append(repost_dict)
     # Pass the moderated data to the template
-    return render_template('post_detail.html.j2',
-                           post=post,
-                           reactions=reactions,
-                           comments=comments,
-                           reaction_emojis=REACTION_EMOJIS,
-                           reaction_types=REACTION_TYPES)
+    return render_template(
+        'post_detail.html.j2',
+        post=post,
+        reactions=reactions,
+        comments=comments,
+        reposts=reposts_moderated,
+        reaction_emojis=REACTION_EMOJIS,
+        reaction_types=REACTION_TYPES,
+        original_post=original_post_dict,
+        original_reactions=original_reactions,
+    )
 
 @app.route('/about')
 def about():
@@ -928,7 +1026,7 @@ def recommend(user_id, filter_following):
         top_keywords = {word for word, _ in word_counts.most_common(10)}
 
     query = """
-    SELECT p.id, p.content, p.created_at, u.username, u.id as user_id
+    SELECT p.id, p.content, p.created_at, u.username, u.id as user_id, p.original_post_id
     FROM posts p
     JOIN users u ON p.user_id = u.id
     """
